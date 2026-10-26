@@ -13,6 +13,10 @@
 [![Donate on Github Sponsor](https://img.shields.io/badge/Github%20Sponsor-Donate-pink?logo=githubsponsors)](https://github.com/sponsors/Multiverse)
 [![Donate on Open Collective](https://img.shields.io/badge/Open%20Collective-Donate-blue?style=flat&logo=opencollective)](https://opencollective.com/multiverse-plugins)
 
+
+# ADDITIONS
+- I have added folia support :)
+
 # About
 
 [Multiverse](https://modrinth.com/plugin/multiverse-core) was created at the dawn of Bukkit multiworld support. It has since then grown into a **complete world management solution!** Multiverse provides the easiest to use world management solution for your Minecraft server, big or small, and with great addons like [Portals](https://dev.bukkit.org/projects/multiverse-portals) and [NetherPortals](https://dev.bukkit.org/projects/multiverse-netherportals/), what's not to love!
