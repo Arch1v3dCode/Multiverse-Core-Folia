@@ -23,6 +23,7 @@ import org.mvplugins.multiverse.core.destination.DestinationInstance;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.Message;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.utils.WorldTickDeferrer;
 import org.mvplugins.multiverse.core.utils.result.AsyncAttemptsAggregate;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
@@ -98,6 +99,17 @@ class DeleteCommand extends CoreCommand {
     }
 
     private void doWorldDeleting(MVCommandIssuer issuer, MultiverseWorld world) {
+        if (RegionScheduling.isCanvas()) {
+            worldManager.deleteWorldAsync(DeleteWorldOptions.world(world))
+                    .onSuccess(deletedWorldName -> {
+                        Logging.fine("World delete success: " + deletedWorldName);
+                        issuer.sendInfo(MVCorei18n.DELETE_SUCCESS, Replace.WORLD.with(deletedWorldName));
+                    }).onFailure(failure -> {
+                        Logging.fine("World delete failure: " + failure);
+                        issuer.sendError(failure.getFailureMessage());
+                    });
+            return;
+        }
         worldManager.deleteWorld(DeleteWorldOptions.world(world))
                 .onSuccess(deletedWorldName -> {
                     Logging.fine("World delete success: " + deletedWorldName);

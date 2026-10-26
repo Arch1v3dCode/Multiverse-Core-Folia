@@ -5,4 +5,6 @@ website: 'https://modrinth.com/plugin/multiverse-core'
 description: 'The original Bukkit Multi-World Plugin!'
 softdepend: ['Vault', 'PlaceholderAPI']
 api-version: 1.13
+# Canvas 1.21.11 restores world loading and replaces unload with unloadWorldAsync.
+canvas-supported: true
 version: ${version}

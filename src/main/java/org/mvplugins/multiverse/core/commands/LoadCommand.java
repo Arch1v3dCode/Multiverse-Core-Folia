@@ -19,6 +19,7 @@ import org.mvplugins.multiverse.core.command.flag.CommandFlagsManager;
 import org.mvplugins.multiverse.core.command.flag.FlagBuilder;
 import org.mvplugins.multiverse.core.command.flag.ParsedCommandFlags;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.world.MultiverseWorld;
 import org.mvplugins.multiverse.core.world.WorldManager;
@@ -55,7 +56,7 @@ class LoadCommand extends CoreCommand {
         ParsedCommandFlags parsedFlags = flags.parse(flagArray);
 
         issuer.sendInfo(MVCorei18n.LOAD_LOADING, Replace.WORLD.with(world.getName()));
-        worldManager.loadWorld(LoadWorldOptions.world(world)
+        RegionScheduling.runOnGlobal(() -> worldManager.loadWorld(LoadWorldOptions.world(world)
                         .doFolderCheck(!parsedFlags.hasFlag(flags.skipFolderCheck)))
                 .onSuccess(newWorld -> {
                     Logging.fine("World load success: " + newWorld);
@@ -63,7 +64,7 @@ class LoadCommand extends CoreCommand {
                 }).onFailure(failure -> {
                     Logging.fine("World load failure: " + failure);
                     issuer.sendError(failure.getFailureMessage());
-                });
+                }));
     }
 
     @Service

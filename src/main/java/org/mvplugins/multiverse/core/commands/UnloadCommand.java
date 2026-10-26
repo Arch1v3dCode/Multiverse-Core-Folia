@@ -22,6 +22,7 @@ import org.mvplugins.multiverse.core.destination.DestinationInstance;
 import org.mvplugins.multiverse.core.destination.DestinationsProvider;
 import org.mvplugins.multiverse.core.destination.core.WorldDestination;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.utils.result.AsyncAttemptsAggregate;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
@@ -82,6 +83,17 @@ class UnloadCommand extends CoreCommand {
         UnloadWorldOptions unloadWorldOptions = UnloadWorldOptions.world(world)
                 .unloadBukkitWorld(!parsedFlags.hasFlag(flags.noUnloadBukkitWorld))
                 .saveBukkitWorld(!parsedFlags.hasFlag(flags.noSave));
+        if (RegionScheduling.isCanvas() && !parsedFlags.hasFlag(flags.noUnloadBukkitWorld)) {
+            worldManager.unloadWorldAsync(unloadWorldOptions)
+                    .onSuccess(loadedWorld -> {
+                        Logging.fine("World unload success: " + loadedWorld);
+                        issuer.sendInfo(MVCorei18n.UNLOAD_SUCCESS, Replace.WORLD.with(loadedWorld.getName()));
+                    }).onFailure(failure -> {
+                        Logging.fine("World unload failure: " + failure);
+                        issuer.sendError(failure.getFailureMessage());
+                    });
+            return;
+        }
         worldManager.unloadWorld(unloadWorldOptions)
                 .onSuccess(loadedWorld -> {
                     Logging.fine("World unload success: " + loadedWorld);

@@ -34,6 +34,7 @@ import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.Message;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.utils.REPatterns;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.utils.WorldTickDeferrer;
 import org.mvplugins.multiverse.core.utils.result.AsyncAttemptsAggregate;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
@@ -122,6 +123,19 @@ class RegenCommand extends CoreCommand {
                 .keepWorldBorder(!parsedFlags.hasFlag(flags.resetWorldBorder))
                 .keepFiles(parsedFlags.flagValue(flags.keepFiles));
 
+        if (RegionScheduling.isCanvas()) {
+            worldManager.regenWorldAsync(regenWorldOptions).onSuccess(newWorld -> {
+                Logging.fine("World regen success: " + newWorld);
+                issuer.sendInfo(MVCorei18n.REGEN_SUCCESS, Replace.WORLD.with(newWorld.getName()));
+                if (parsedFlags.hasFlag(flags.removePlayers)) {
+                    playerWorldTeleporter.teleportPlayersToWorld(worldPlayers, newWorld);
+                }
+            }).onFailure(failure -> {
+                Logging.warning("World regen failure: " + failure);
+                issuer.sendError(failure.getFailureMessage());
+            });
+            return;
+        }
         worldManager.regenWorld(regenWorldOptions).onSuccess(newWorld -> {
             Logging.fine("World regen success: " + newWorld);
             issuer.sendInfo(MVCorei18n.REGEN_SUCCESS, Replace.WORLD.with(newWorld.getName()));

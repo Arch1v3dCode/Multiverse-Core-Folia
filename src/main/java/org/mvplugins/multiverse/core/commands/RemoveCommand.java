@@ -22,6 +22,7 @@ import org.mvplugins.multiverse.core.destination.DestinationInstance;
 import org.mvplugins.multiverse.core.destination.DestinationsProvider;
 import org.mvplugins.multiverse.core.destination.core.WorldDestination;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.utils.result.AsyncAttemptsAggregate;
 import org.mvplugins.multiverse.core.world.MultiverseWorld;
@@ -79,9 +80,21 @@ class RemoveCommand extends CoreCommand {
     }
 
     private void doWorldRemoving(MVCommandIssuer issuer, MultiverseWorld world, ParsedCommandFlags parsedFlags) {
-        worldManager.removeWorld(RemoveWorldOptions.world(world)
-                        .saveBukkitWorld(!parsedFlags.hasFlag(flags.noSave))
-                        .unloadBukkitWorld(!parsedFlags.hasFlag(flags.noUnloadBukkitWorld)))
+        RemoveWorldOptions removeWorldOptions = RemoveWorldOptions.world(world)
+                .saveBukkitWorld(!parsedFlags.hasFlag(flags.noSave))
+                .unloadBukkitWorld(!parsedFlags.hasFlag(flags.noUnloadBukkitWorld));
+        if (RegionScheduling.isCanvas() && removeWorldOptions.unloadBukkitWorld()) {
+            worldManager.removeWorldAsync(removeWorldOptions)
+                    .onSuccess(removedWorldName -> {
+                        Logging.fine("World remove success: " + removedWorldName);
+                        issuer.sendInfo(MVCorei18n.REMOVE_SUCCESS, Replace.WORLD.with(removedWorldName));
+                    }).onFailure(failure -> {
+                        Logging.fine("World remove failure: " + failure);
+                        issuer.sendError(failure.getFailureMessage());
+                    });
+            return;
+        }
+        worldManager.removeWorld(removeWorldOptions)
                 .onSuccess(removedWorldName -> {
                     Logging.fine("World remove success: " + removedWorldName);
                     issuer.sendInfo(MVCorei18n.REMOVE_SUCCESS, Replace.WORLD.with(removedWorldName));

@@ -25,15 +25,15 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
-import org.bukkit.plugin.Plugin;
 import org.jvnet.hk2.annotations.Service;
 
-import org.mvplugins.multiverse.core.MultiverseCore;
 import org.mvplugins.multiverse.core.command.MVCommandManager;
 import org.mvplugins.multiverse.core.config.CoreConfig;
 import org.mvplugins.multiverse.core.destination.DestinationInstance;
 import org.mvplugins.multiverse.core.destination.DestinationsProvider;
+import org.mvplugins.multiverse.core.dynamiclistener.EventRunnable;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.DefaultEventPriority;
+import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventClass;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventMethod;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventPriorityKey;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.IgnoreIfCancelled;
@@ -44,6 +44,7 @@ import org.mvplugins.multiverse.core.permissions.CorePermissionsChecker;
 import org.mvplugins.multiverse.core.teleportation.AsyncSafetyTeleporter;
 import org.mvplugins.multiverse.core.teleportation.BlockSafety;
 import org.mvplugins.multiverse.core.teleportation.TeleportQueue;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.utils.result.ResultChain;
 import org.mvplugins.multiverse.core.world.LoadedMultiverseWorld;
 import org.mvplugins.multiverse.core.world.MultiverseWorld;
@@ -58,7 +59,6 @@ import org.mvplugins.multiverse.core.world.helpers.EnforcementHandler;
  */
 @Service
 final class MVPlayerListener implements CoreListener {
-    private final Plugin plugin;
     private final CoreConfig config;
     private final Provider<WorldManager> worldManagerProvider;
     private final BlockSafety blockSafety;
@@ -75,7 +75,6 @@ final class MVPlayerListener implements CoreListener {
 
     @Inject
     MVPlayerListener(
-            MultiverseCore plugin,
             CoreConfig config,
             Provider<WorldManager> worldManagerProvider,
             BlockSafety blockSafety,
@@ -89,7 +88,6 @@ final class MVPlayerListener implements CoreListener {
             DimensionFinder dimensionFinder,
             CorePermissionsChecker corePermissionsChecker,
             AsyncSafetyTeleporter asyncSafetyTeleporter) {
-        this.plugin = plugin;
         this.config = config;
         this.worldManagerProvider = worldManagerProvider;
         this.blockSafety = blockSafety;
@@ -126,18 +124,32 @@ final class MVPlayerListener implements CoreListener {
     @EventPriorityKey("mvcore-player-respawn")
     @DefaultEventPriority(EventPriority.LOW)
     void playerRespawn(PlayerRespawnEvent event) {
-        Player player = event.getPlayer();
+        applyRespawnOverride(
+                event.getPlayer(),
+                event.getRespawnLocation(),
+                event.isBedSpawn(),
+                event.isAnchorSpawn(),
+                event::setRespawnLocation);
+    }
+
+    private void applyRespawnOverride(
+            Player player,
+            Location respawnLocation,
+            boolean bedSpawn,
+            boolean anchorSpawn,
+            java.util.function.Consumer<Location> setRespawnLocation
+    ) {
         LoadedMultiverseWorld mvWorld = getWorldManager().getLoadedWorld(player.getWorld()).getOrNull();
         if (mvWorld == null) {
             Logging.finer("Player '%s' died in a world that is not managed by Multiverse.", player.getName());
             return;
         }
 
-        if (mvWorld.getBedRespawn() && event.isBedSpawn()) {
+        if (mvWorld.getBedRespawn() && bedSpawn) {
             Logging.fine("Spawning %s at their bed.", player.getName());
             return;
         }
-        if (mvWorld.getAnchorRespawn() && event.isAnchorSpawn()) {
+        if (mvWorld.getAnchorRespawn() && anchorSpawn) {
             Logging.fine("Spawning %s at their anchor.", player.getName());
             return;
         }
@@ -146,19 +158,20 @@ final class MVPlayerListener implements CoreListener {
                 .onEmpty(() -> Logging.fine("No respawn-world determined for world '%s'.", mvWorld.getName()))
                 .flatMap(respawnWorld -> {
                     Logging.finer("Using respawn-world '%s' for world '%s'.", respawnWorld.getName(), mvWorld.getName());
-                    return getMostAccurateRespawnLocation(respawnWorld, event.getRespawnLocation())
+                    return getMostAccurateRespawnLocation(respawnWorld, respawnLocation)
                             .onEmpty(() -> Logging.finer("No accurate respawn-location determined for world '%s'.",
                                     mvWorld.getName()));
                 })
                 .peek(newRespawnLocation -> {
-                    MVRespawnEvent respawnEvent = new MVRespawnEvent(newRespawnLocation, event.getPlayer());
+                    MVRespawnEvent respawnEvent = new MVRespawnEvent(newRespawnLocation, player);
                     this.server.getPluginManager().callEvent(respawnEvent);
                     if (respawnEvent.isCancelled()) {
                         Logging.fine("Player '%s' cancelled their respawn event.", player.getName());
                         return;
                     }
-                    Logging.fine("Overriding respawn location for player '%s' to '%s'.", player.getName(), respawnEvent.getRespawnLocation());
-                    event.setRespawnLocation(respawnEvent.getRespawnLocation());
+                    Logging.fine("Overriding respawn location for player '%s' to '%s'.",
+                            player.getName(), respawnEvent.getRespawnLocation());
+                    setRespawnLocation.accept(respawnEvent.getRespawnLocation());
                 });
     }
 
@@ -270,23 +283,36 @@ final class MVPlayerListener implements CoreListener {
     @EventPriorityKey("mvcore-player-teleport")
     @DefaultEventPriority(EventPriority.HIGHEST)
     void playerTeleport(PlayerTeleportEvent event) {
-        Player teleportee = event.getPlayer();
+        enforcePlayerTeleport(
+                event.getPlayer(),
+                event.getFrom(),
+                event.getTo(),
+                event.isCancelled(),
+                event.getCause(),
+                () -> event.setCancelled(true));
+    }
 
-        if (event.isCancelled()) {
+    private void enforcePlayerTeleport(
+            Player teleportee,
+            Location fromLocation,
+            Location toLocation,
+            boolean alreadyCancelled,
+            PlayerTeleportEvent.TeleportCause cause,
+            Runnable cancel
+    ) {
+        if (alreadyCancelled) {
             Logging.finer("Teleport event for player '" + teleportee.getName() + "' was already cancelled.");
             return;
         }
 
         Logging.finer("Got teleport event for player '"
-                + teleportee.getName() + "' with cause '" + event.getCause() + "'");
+                + teleportee.getName() + "' with cause '" + cause + "'");
 
-        Location fromLocation = event.getFrom();
         if (fromLocation == null || fromLocation.getWorld() == null) { // should never be null, but just in case
             Logging.finer("Teleport event for player '" + teleportee.getName() + "' has null from-location or world.");
             return;
         }
 
-        Location toLocation = event.getTo();
         if (toLocation == null || toLocation.getWorld() == null) { // may be null on spigot
             Logging.finer("Teleport event for player '" + teleportee.getName() + "' has null to-location or world.");
             return;
@@ -337,7 +363,7 @@ final class MVPlayerListener implements CoreListener {
                     }
                 })
                 .onFailure(results -> {
-                    event.setCancelled(true);
+                    cancel.run();
                     getCommandManager().getCommandIssuer(finalTeleporter).sendError(results.getLastResultMessage());
                 });
 
@@ -411,10 +437,19 @@ final class MVPlayerListener implements CoreListener {
                     + "actions will be taken by Multiverse-Core.");
             return;
         }
-        ResultChain entryResult = worldEntryCheckerProvider.forSender(event.getPlayer()).canEnterWorld(fromWorld, toWorld)
+        enforceWorldEntry(event.getPlayer(), fromWorld, toWorld, () -> event.setCancelled(true));
+    }
+
+    private void enforceWorldEntry(
+            Player player,
+            MultiverseWorld fromWorld,
+            LoadedMultiverseWorld toWorld,
+            Runnable cancel
+    ) {
+        ResultChain entryResult = worldEntryCheckerProvider.forSender(player).canEnterWorld(fromWorld, toWorld)
                 .onFailure(results -> {
-                    event.setCancelled(true);
-                    getCommandManager().getCommandIssuer(event.getPlayer()).sendError(results.getLastResultMessage());
+                    cancel.run();
+                    getCommandManager().getCommandIssuer(player).sendError(results.getLastResultMessage());
                 });
 
         Logging.fine("Teleport result: %s", entryResult);
@@ -432,11 +467,10 @@ final class MVPlayerListener implements CoreListener {
             doGameModeAndFlightEnforcement(player, world);
             return;
         }
-        server.getScheduler().runTaskLater(
-                this.plugin,
+        RegionScheduling.runOnEntity(
+                player,
                 () -> doGameModeAndFlightEnforcement(player, world),
-                config.getGamemodeAndFlightEnforceDelay()
-        );
+                config.getGamemodeAndFlightEnforceDelay());
     }
 
     private void doGameModeAndFlightEnforcement(Player player, World world) {
@@ -447,5 +481,101 @@ final class MVPlayerListener implements CoreListener {
         Logging.finer("Handling gamemode and flight for player %s in world '%s'", player.getName(), world.getName());
         enforcementHandler.handleFlightEnforcement(player);
         enforcementHandler.handleGameModeEnforcement(player);
+    }
+
+    /**
+     * Canvas replaces Folia's broken respawn event. Registered only when the class exists.
+     */
+    @EventClass("io.canvasmc.canvas.event.PlayerRespawnAsyncEvent")
+    @EventPriorityKey("mvcore-player-respawn")
+    @DefaultEventPriority(EventPriority.LOW)
+    EventRunnable canvasPlayerRespawn() {
+        return new EventRunnable<io.canvasmc.canvas.event.PlayerRespawnAsyncEvent>() {
+            @Override
+            public void onEvent(io.canvasmc.canvas.event.PlayerRespawnAsyncEvent event) {
+                applyRespawnOverride(
+                        event.getPlayer(),
+                        event.getRespawnLocation(),
+                        event.isBedSpawn(),
+                        event.isAnchorSpawn(),
+                        event::setRespawnLocation);
+            }
+        };
+    }
+
+    /**
+     * Canvas replaces Folia's broken teleport event.
+     */
+    @EventClass("io.canvasmc.canvas.event.EntityTeleportAsyncEvent")
+    @EventPriorityKey("mvcore-player-teleport")
+    @DefaultEventPriority(EventPriority.HIGHEST)
+    EventRunnable canvasPlayerTeleport() {
+        return new EventRunnable<io.canvasmc.canvas.event.EntityTeleportAsyncEvent>() {
+            @Override
+            public void onEvent(io.canvasmc.canvas.event.EntityTeleportAsyncEvent event) {
+                if (!(event.getEntity() instanceof Player player)) {
+                    return;
+                }
+                enforcePlayerTeleport(
+                        player,
+                        event.getFrom(),
+                        event.getTo(),
+                        event.isCancelled(),
+                        event.getCause(),
+                        () -> event.setCancelled(true));
+            }
+        };
+    }
+
+    /**
+     * Applies per-world gamemode after a Canvas teleport lands in another world.
+     */
+    @EventClass("io.canvasmc.canvas.event.EntityPostTeleportAsyncEvent")
+    @EventPriorityKey("mvcore-player-changed-world")
+    @DefaultEventPriority(EventPriority.NORMAL)
+    EventRunnable canvasPlayerChangedWorld() {
+        return new EventRunnable<io.canvasmc.canvas.event.EntityPostTeleportAsyncEvent>() {
+            @Override
+            public void onEvent(io.canvasmc.canvas.event.EntityPostTeleportAsyncEvent event) {
+                if (!(event.getEntity() instanceof Player player)) {
+                    return;
+                }
+                World fromWorld = event.getFrom() == null ? null : event.getFrom().getWorld();
+                World toWorld = event.getTo() == null ? null : event.getTo().getWorld();
+                if (fromWorld == null || toWorld == null || fromWorld.equals(toWorld)) {
+                    return;
+                }
+                handleGameModeAndFlight(player, toWorld);
+            }
+        };
+    }
+
+    /**
+     * Canvas replaces Folia's broken portal event. Entry checks still apply; search radius stays on Paper's event.
+     */
+    @EventClass("io.canvasmc.canvas.event.EntityPortalAsyncEvent")
+    @EventPriorityKey("mvcore-player-portal")
+    @DefaultEventPriority(EventPriority.HIGH)
+    @IgnoreIfCancelled
+    EventRunnable canvasPlayerPortal() {
+        return new EventRunnable<io.canvasmc.canvas.event.EntityPortalAsyncEvent>() {
+            @Override
+            public void onEvent(io.canvasmc.canvas.event.EntityPortalAsyncEvent event) {
+                if (!(event.getEntity() instanceof Player player)) {
+                    return;
+                }
+                World from = event.getFrom();
+                World to = event.getTo();
+                if (from == null || to == null || from.equals(to)) {
+                    return;
+                }
+                LoadedMultiverseWorld toWorld = getWorldManager().getLoadedWorld(to).getOrNull();
+                if (toWorld == null) {
+                    return;
+                }
+                MultiverseWorld fromWorld = getWorldManager().getLoadedWorld(from).getOrNull();
+                enforceWorldEntry(player, fromWorld, toWorld, () -> event.setCancelled(true));
+            }
+        };
     }
 }

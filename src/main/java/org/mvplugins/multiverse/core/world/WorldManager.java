@@ -7,12 +7,15 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import com.dumptruckman.minecraft.util.Logging;
 import com.google.common.base.Strings;
+import io.canvasmc.canvas.WorldUnloadResult;
 import io.vavr.control.Option;
 import io.vavr.control.Try;
 import jakarta.inject.Inject;
@@ -47,10 +50,12 @@ import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.permissions.CorePermissions;
 import org.mvplugins.multiverse.core.teleportation.BlockSafety;
 import org.mvplugins.multiverse.core.teleportation.LocationManipulation;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.utils.ServerProperties;
 import org.mvplugins.multiverse.core.utils.compatibility.BukkitCompatibility;
 import org.mvplugins.multiverse.core.utils.compatibility.WorldCompatibility;
 import org.mvplugins.multiverse.core.utils.compatibility.WorldCreatorCompatibility;
+import org.mvplugins.multiverse.core.utils.result.AsyncAttempt;
 import org.mvplugins.multiverse.core.utils.result.Attempt;
 import org.mvplugins.multiverse.core.utils.result.FailureReason;
 import org.mvplugins.multiverse.core.utils.FileUtils;
@@ -631,6 +636,189 @@ public final class WorldManager {
                 success -> removeLoadedMultiverseWorld(world));
     }
 
+    /**
+     * Unloads a world. On Canvas this completes when {@code unloadWorldAsync} finishes.
+     * On Paper the returned attempt is already complete.
+     *
+     * @param options The options for customizing the unloading of a world.
+     * @return The result of the unload action.
+     */
+    public AsyncAttempt<MultiverseWorld, UnloadFailureReason> unloadWorldAsync(@NotNull UnloadWorldOptions options) {
+        if (!RegionScheduling.isCanvas() || !options.unloadBukkitWorld()) {
+            return AsyncAttempt.fromAttempt(unloadWorld(options));
+        }
+        CompletableFuture<Attempt<MultiverseWorld, UnloadFailureReason>> future = new CompletableFuture<>();
+        RegionScheduling.runOnGlobal(() -> beginCanvasUnload(options, future));
+        return AsyncAttempt.fromFuture(future);
+    }
+
+    /**
+     * Removes a world. On Canvas, unloading the Bukkit world finishes before the world is forgotten.
+     *
+     * @param options The options for customizing the removal of a world.
+     * @return The result of the remove action.
+     */
+    public AsyncAttempt<String, RemoveFailureReason> removeWorldAsync(@NotNull RemoveWorldOptions options) {
+        if (!RegionScheduling.isCanvas() || !options.unloadBukkitWorld()) {
+            return AsyncAttempt.fromAttempt(removeWorld(options));
+        }
+        CompletableFuture<Attempt<String, RemoveFailureReason>> future = new CompletableFuture<>();
+        getLoadedWorld(options.world()).fold(
+                () -> future.complete(removeWorldFromConfig(options.world())),
+                loadedWorld -> unloadWorldAsync(UnloadWorldOptions.world(loadedWorld)
+                                .saveBukkitWorld(options.saveBukkitWorld())
+                                .unloadBukkitWorld(true))
+                        .onSuccess(unloaded -> future.complete(removeWorldFromConfig(unloaded)))
+                        .onFailure(failure -> future.complete(failure.<String>map(ignored -> "")
+                                .transform(RemoveFailureReason.UNLOAD_FAILED))));
+        return AsyncAttempt.fromFuture(future);
+    }
+
+    /**
+     * Deletes a world. On Canvas, the folder is removed only after the async unload succeeds.
+     *
+     * @param options The options for customizing the deletion of a world.
+     * @return The result of the delete action.
+     */
+    public AsyncAttempt<String, DeleteFailureReason> deleteWorldAsync(@NotNull DeleteWorldOptions options) {
+        if (!RegionScheduling.isCanvas()) {
+            return AsyncAttempt.fromAttempt(deleteWorld(options));
+        }
+        CompletableFuture<Attempt<String, DeleteFailureReason>> future = new CompletableFuture<>();
+        RegionScheduling.runOnGlobal(() -> deleteWorldOnCanvas(options, future));
+        return AsyncAttempt.fromFuture(future);
+    }
+
+    /**
+     * Regenerates a world. On Canvas, creation runs after the async delete finishes.
+     *
+     * @param options The options for customizing the regeneration of a world.
+     * @return The result of the regeneration.
+     */
+    public AsyncAttempt<LoadedMultiverseWorld, RegenFailureReason> regenWorldAsync(@NotNull RegenWorldOptions options) {
+        if (!RegionScheduling.isCanvas()) {
+            return AsyncAttempt.fromAttempt(regenWorld(options));
+        }
+        CompletableFuture<Attempt<LoadedMultiverseWorld, RegenFailureReason>> future = new CompletableFuture<>();
+        RegionScheduling.runOnGlobal(() -> regenWorldOnCanvas(options, future));
+        return AsyncAttempt.fromFuture(future);
+    }
+
+    /**
+     * @param worldName The world name to check.
+     * @return True while this manager is unloading that world.
+     */
+    public boolean isUnloading(@NotNull String worldName) {
+        return unloadTracker.contains(worldName);
+    }
+
+    private void beginCanvasUnload(
+            @NotNull UnloadWorldOptions options,
+            @NotNull CompletableFuture<Attempt<MultiverseWorld, UnloadFailureReason>> future
+    ) {
+        LoadedMultiverseWorld world = options.world();
+        if (unloadTracker.contains(world.getName())) {
+            future.complete(worldActionResult(UnloadFailureReason.WORLD_ALREADY_UNLOADING, world.getName()));
+            return;
+        }
+        if (!isLoadedWorld(world)) {
+            future.complete(worldActionResult(UnloadFailureReason.WORLD_NON_EXISTENT, world.getName()));
+            return;
+        }
+        unloadBukkitWorldCanvas(world.getBukkitWorld().getOrNull(), options.saveBukkitWorld(), result -> future.complete(
+                result.fold(
+                        exception -> worldActionResult(UnloadFailureReason.BUKKIT_UNLOAD_FAILED, world.getName(), exception),
+                        success -> removeLoadedMultiverseWorld(world))));
+    }
+
+    private void deleteWorldOnCanvas(
+            @NotNull DeleteWorldOptions options,
+            @NotNull CompletableFuture<Attempt<String, DeleteFailureReason>> future
+    ) {
+        getLoadedWorld(options.world()).fold(
+                () -> {
+                    loadWorld(LoadWorldOptions.world(options.world())).fold(
+                            failure -> {
+                                future.complete(worldActionResult(DeleteFailureReason.LOAD_FAILED, options.world().getName()));
+                                return null;
+                            },
+                            loadedWorld -> {
+                                deleteWorldOnCanvas(
+                                        DeleteWorldOptions.world(loadedWorld).keepFiles(options.keepFiles()),
+                                        future);
+                                return null;
+                            });
+                    return null;
+                },
+                loadedWorld -> {
+                    Attempt<File, DeleteFailureReason> folderAttempt = validateWorldToDelete(loadedWorld);
+                    if (folderAttempt.isFailure()) {
+                        future.complete(folderAttempt.<String>map(ignored -> ""));
+                        return null;
+                    }
+                    File worldFolder = folderAttempt.fold(failure -> null, Function.identity());
+                    MVWorldDeleteEvent event = new MVWorldDeleteEvent(loadedWorld);
+                    pluginManager.callEvent(event);
+                    if (event.isCancelled()) {
+                        future.complete(Attempt.failure(DeleteFailureReason.EVENT_CANCELLED));
+                        return null;
+                    }
+                    unloadWorldAsync(UnloadWorldOptions.world(loadedWorld)
+                                    .unloadBukkitWorld(true)
+                                    .saveBukkitWorld(false))
+                            .onSuccess(unloaded -> {
+                                Attempt<String, RemoveFailureReason> removed = removeWorldFromConfig(unloaded);
+                                if (removed.isFailure()) {
+                                    future.complete(removed.transform(DeleteFailureReason.REMOVE_FAILED));
+                                    return;
+                                }
+                                future.complete(fileUtils.deleteFolder(worldFolder, options.keepFiles()).fold(
+                                        exception -> worldActionResult(DeleteFailureReason.FAILED_TO_DELETE_FOLDER,
+                                                loadedWorld.getName(), exception),
+                                        success -> worldActionResult(loadedWorld.getName())));
+                            })
+                            .onFailure(failure -> future.complete(failure.<String>map(ignored -> "")
+                                    .transform(DeleteFailureReason.REMOVE_FAILED)));
+                    return null;
+                });
+    }
+
+    private void regenWorldOnCanvas(
+            @NotNull RegenWorldOptions options,
+            @NotNull CompletableFuture<Attempt<LoadedMultiverseWorld, RegenFailureReason>> future
+    ) {
+        LoadedMultiverseWorld world = options.world();
+        DataTransfer<LoadedMultiverseWorld> dataTransfer = regenWorldTransferData(options, world);
+        boolean shouldKeepSpawnLocation = options.keepWorldConfig() && options.seed() == world.getSeed();
+        Location spawnLocation = world.getSpawnLocation();
+        CreateWorldOptions createWorldOptions = CreateWorldOptions.worldKeyOrName(world.worldConfig.getWorldKeyOrName())
+                .biome(world.getBiome())
+                .bonusChest(world.getBukkitWorld().map(WorldCompatibility::hasBonusChest).getOrElse(false))
+                .environment(world.getEnvironment())
+                .generateStructures(world.canGenerateStructures().getOrElse(true))
+                .generator(world.getGenerator())
+                .generatorSettings(world.getGeneratorSettings())
+                .seed(options.seed())
+                .useSpawnAdjust(!shouldKeepSpawnLocation && world.getAdjustSpawn())
+                .worldType(world.getWorldType().getOrElse(WorldType.NORMAL))
+                .doFolderCheck(options.keepFiles().isEmpty());
+
+        deleteWorldAsync(DeleteWorldOptions.world(world).keepFiles(options.keepFiles()))
+                .onSuccess(ignored -> RegionScheduling.runOnGlobal(() -> future.complete(
+                        createWorld(createWorldOptions)
+                                .transform(RegenFailureReason.CREATE_FAILED)
+                                .onSuccess(newWorld -> {
+                                    dataTransfer.pasteAllTo(newWorld);
+                                    if (shouldKeepSpawnLocation) {
+                                        newWorld.setSpawnLocation(spawnLocation);
+                                    }
+                                    saveWorldsConfig();
+                                    pluginManager.callEvent(new MVWorldRegeneratedEvent(newWorld));
+                                }))))
+                .onFailure(failure -> future.complete(failure.<LoadedMultiverseWorld>map(ignored -> null)
+                        .transform(RegenFailureReason.DELETE_FAILED)));
+    }
+
     private Attempt<MultiverseWorld, UnloadFailureReason> removeLoadedMultiverseWorld(@NotNull LoadedMultiverseWorld mvWorld) {
         MultiverseWorld unloadedWorld = worldStore.getUnloadedWorldRef(mvWorld.getKey().toString()).getOrElseThrow(
                 () -> new IllegalStateException("Unloaded ref of world not found: " + mvWorld));
@@ -998,6 +1186,11 @@ public final class WorldManager {
      * @return The created world.
      */
     private Attempt<World, WorldCreatorFailureReason> createBukkitWorld(WorldCreator worldCreator) {
+        if (RegionScheduling.isCanvas() && !RegionScheduling.isGlobalTickThread()) {
+            CompletableFuture<Attempt<World, WorldCreatorFailureReason>> future = new CompletableFuture<>();
+            RegionScheduling.runOnGlobal(() -> future.complete(createBukkitWorld(worldCreator)));
+            return future.join();
+        }
         return Try.of(() -> {
             this.loadTracker.add(worldCreator.name());
             World world = worldCreator.createWorld();
@@ -1023,7 +1216,17 @@ public final class WorldManager {
      * @param world The bukkit world to unload.
      * @return The unloaded world.
      */
+    @SuppressWarnings("removal") // Canvas removes the sync unload API; Paper still uses it.
     private Try<Void> unloadBukkitWorld(World world, boolean save) {
+        if (RegionScheduling.isCanvas()) {
+            if (RegionScheduling.isGlobalTickThread()) {
+                return Try.failure(new IllegalStateException(
+                        "Canvas world unload is asynchronous on the global tick thread"));
+            }
+            CompletableFuture<Try<Void>> future = new CompletableFuture<>();
+            unloadBukkitWorldCanvas(world, save, future::complete);
+            return future.join();
+        }
         return Try.run(() -> {
             if (world == null) {
                 return;
@@ -1034,6 +1237,43 @@ public final class WorldManager {
             }
             Logging.fine("Bukkit unloaded world: " + world.getName());
         }).andFinally(() -> unloadTracker.remove(world.getName()));
+    }
+
+    private void unloadBukkitWorldCanvas(@Nullable World world, boolean save, @NotNull Consumer<Try<Void>> callback) {
+        if (world == null) {
+            callback.accept(Try.success(null));
+            return;
+        }
+        String worldName = world.getName();
+        Runnable unload = () -> {
+            unloadTracker.add(worldName);
+            try {
+                Bukkit.getServer().unloadWorldAsync(world, save, result -> {
+                    try {
+                        callback.accept(canvasUnloadResult(world, result));
+                    } finally {
+                        unloadTracker.remove(worldName);
+                    }
+                });
+            } catch (Throwable throwable) {
+                unloadTracker.remove(worldName);
+                callback.accept(Try.failure(throwable));
+            }
+        };
+        if (RegionScheduling.isGlobalTickThread()) {
+            unload.run();
+        } else {
+            RegionScheduling.runOnGlobal(unload);
+        }
+    }
+
+    private Try<Void> canvasUnloadResult(@NotNull World world, @NotNull WorldUnloadResult result) {
+        if (result.isSuccess()) {
+            Logging.fine("Canvas unloaded world: " + world.getName());
+            return Try.success(null);
+        }
+        Logging.warning("Canvas failed to unload world %s: %s", world.getName(), result);
+        return Try.run(() -> throwUnloadException(world));
     }
 
     private void throwUnloadException(World world) throws MultiverseWorldException {

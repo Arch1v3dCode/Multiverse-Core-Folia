@@ -19,6 +19,7 @@ import org.mvplugins.multiverse.core.command.flag.CommandFlagsManager;
 import org.mvplugins.multiverse.core.command.flag.FlagBuilder;
 import org.mvplugins.multiverse.core.command.flag.ParsedCommandFlags;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.world.MultiverseWorld;
 import org.mvplugins.multiverse.core.world.WorldManager;
@@ -68,14 +69,14 @@ class CloneCommand extends CoreCommand {
                 .keepGameRule(!parsedFlags.hasFlag(flags.resetGamerules))
                 .keepWorldBorder(!parsedFlags.hasFlag(flags.resetWorldBorder))
                 .saveBukkitWorld(!parsedFlags.hasFlag(flags.noSave));
-        worldManager.cloneWorld(cloneWorldOptions)
+        RegionScheduling.runOnGlobal(() -> worldManager.cloneWorld(cloneWorldOptions)
                 .onSuccess(newWorld -> {
                     Logging.fine("World clone success: " + newWorld);
                     issuer.sendInfo(MVCorei18n.CLONE_SUCCESS, Replace.WORLD.with(newWorld.getName()));
                 }).onFailure(failure -> {
                     Logging.fine("World clone failure: " + failure);
                     issuer.sendError(failure.getFailureMessage());
-                });
+                }));
     }
 
     @Service

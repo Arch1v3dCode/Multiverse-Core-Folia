@@ -28,6 +28,7 @@ import org.mvplugins.multiverse.core.command.flag.ParsedCommandFlags;
 import org.mvplugins.multiverse.core.exceptions.command.MVInvalidCommandArgument;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.utils.StringFormatter;
 import org.mvplugins.multiverse.core.utils.position.EntityPosition;
 import org.mvplugins.multiverse.core.utils.result.Attempt.Failure;
@@ -82,7 +83,7 @@ class CreateCommand extends CoreCommand {
 
         issuer.sendInfo(MVCorei18n.CREATE_LOADING);
 
-        worldManager.createWorld(CreateWorldOptions.worldName(worldName)
+        RegionScheduling.runOnGlobal(() -> worldManager.createWorld(CreateWorldOptions.worldName(worldName)
                         .biome(parsedFlags.flagValue(flags.biome, ""))
                         .bonusChest(parsedFlags.hasFlag(flags.bonusChest))
                         .environment(environment)
@@ -95,7 +96,7 @@ class CreateCommand extends CoreCommand {
                         .worldPropertyStrings(StringFormatter.parseCSVMap(parsedFlags.flagValue(flags.properties)))
                         .worldType(parsedFlags.flagValue(flags.worldType, WorldType.NORMAL)))
                 .onSuccess(newWorld -> messageSuccess(issuer, newWorld))
-                .onFailure(failure -> messageFailure(issuer, failure));
+                .onFailure(failure -> messageFailure(issuer, failure)));
     }
 
     private void messageWorldDetails(MVCommandIssuer issuer, String worldName,

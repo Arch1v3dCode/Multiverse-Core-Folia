@@ -23,6 +23,7 @@ import org.mvplugins.multiverse.core.command.flag.CommandValueFlag;
 import org.mvplugins.multiverse.core.command.flag.FlagBuilder;
 import org.mvplugins.multiverse.core.command.flag.ParsedCommandFlags;
 import org.mvplugins.multiverse.core.locale.MVCorei18n;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.locale.message.MessageReplacement.Replace;
 import org.mvplugins.multiverse.core.world.WorldManager;
 import org.mvplugins.multiverse.core.world.generators.GeneratorProvider;
@@ -66,7 +67,7 @@ class ImportCommand extends CoreCommand {
         ParsedCommandFlags parsedFlags = flags.parse(flagArray);
 
         issuer.sendInfo(MVCorei18n.IMPORT_IMPORTING, Replace.WORLD.with(worldName));
-        worldManager.importWorld(ImportWorldOptions.worldName(worldName)
+        RegionScheduling.runOnGlobal(() -> worldManager.importWorld(ImportWorldOptions.worldName(worldName)
                         .biome(parsedFlags.flagValue(flags.biome, ""))
                         .environment(environment)
                         .generator(parsedFlags.flagValue(flags.generator))
@@ -80,7 +81,7 @@ class ImportCommand extends CoreCommand {
                 .onFailure(failure -> {
                     Logging.fine("World import failure: " + failure);
                     issuer.sendError(failure.getFailureMessage());
-                });
+                }));
     }
 
     @Service

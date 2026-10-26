@@ -22,6 +22,17 @@ repositories {
         name = "helpchatRepoReleases"
         url = uri("https://repo.helpch.at/releases/")
     }
+
+    maven {
+        name = "canvasmc"
+        url = uri("https://maven.canvasmc.io/snapshots")
+    }
+}
+
+configurations.configureEach {
+    resolutionStrategy.dependencySubstitution {
+        substitute module('io.papermc.paper:paper-api') using module('io.canvasmc.canvas:canvas-api:1.21.11-R0.1-SNAPSHOT') because 'Canvas 1.21.11 API'
+    }
 }
 
 configure(apiDependencies) {
@@ -31,6 +42,9 @@ configure(apiDependencies) {
 }
 
 dependencies {
+    // Paper-api embeds commons-lang3. Canvas-api does not, but the server still provides it.
+    compileOnly 'org.apache.commons:commons-lang3:3.17.0'
+
     // Economy
     externalPlugin('com.github.MilkBowl:VaultAPI:1.7.1') {
         exclude group: 'org.bukkit', module: 'bukkit'

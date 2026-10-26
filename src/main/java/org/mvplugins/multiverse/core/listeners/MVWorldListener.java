@@ -17,6 +17,7 @@ import org.jvnet.hk2.annotations.Service;
 
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.DefaultEventPriority;
 import org.mvplugins.multiverse.core.dynamiclistener.annotations.EventMethod;
+import org.mvplugins.multiverse.core.utils.RegionScheduling;
 import org.mvplugins.multiverse.core.world.WorldManager;
 import org.mvplugins.multiverse.core.world.options.LoadWorldOptions;
 import org.mvplugins.multiverse.core.world.options.UnloadWorldOptions;
@@ -45,6 +46,11 @@ final class MVWorldListener implements CoreListener {
     @DefaultEventPriority(EventPriority.MONITOR)
     void worldUnload(WorldUnloadEvent event) {
         if (event.isCancelled()) {
+            return;
+        }
+        // Canvas fires this event before unloadWorldAsync finishes. Our own unloads
+        // update Multiverse state from the async callback instead.
+        if (RegionScheduling.isCanvas() && worldManager.isUnloading(event.getWorld().getName())) {
             return;
         }
         worldManager.getLoadedWorld(event.getWorld().getName())

@@ -65,6 +65,18 @@ public final class AsyncAttempt<T, F extends FailureReason> {
     }
 
     /**
+     * Creates an {@link AsyncAttempt} from a future that already produces an {@link Attempt}.
+     *
+     * @param future The future to wrap.
+     * @param <T> The type of the successful result.
+     * @param <F> The type representing failure reasons.
+     * @return An instance of {@link AsyncAttempt}.
+     */
+    public static <T, F extends FailureReason> AsyncAttempt<T, F> fromFuture(CompletableFuture<Attempt<T, F>> future) {
+        return new AsyncAttempt<>(future);
+    }
+
+    /**
      * Creates a successful {@link AsyncAttempt} with a {@code null} result.
      *
      * @param <F> The type representing failure reasons.
@@ -167,6 +179,16 @@ public final class AsyncAttempt<T, F extends FailureReason> {
      */
     public AsyncAttempt<T, F> onSuccess(Runnable runnable) {
         return new AsyncAttempt<>(future.thenApply(attempt -> attempt.onSuccess(runnable)));
+    }
+
+    /**
+     * Executes a consumer with the successful result of this {@link AsyncAttempt}.
+     *
+     * @param consumer The consumer to process the result.
+     * @return A new {@link AsyncAttempt} instance.
+     */
+    public AsyncAttempt<T, F> onSuccess(Consumer<T> consumer) {
+        return new AsyncAttempt<>(future.thenApply(attempt -> attempt.onSuccess(consumer)));
     }
 
     /**
